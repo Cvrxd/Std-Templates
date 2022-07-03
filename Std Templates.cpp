@@ -10,7 +10,7 @@ shared_ptr<T> make_shared(T, Args&&... args);
 
 ////////////////// move //////////////////
 template <typename T>
-std::remove_reference_t<T>&& _move(T&& value) noexcept
+std::remove_reference_t<T>&& move(T&& value) noexcept
 {
 	return dynamic_cast<std::remove_reference_t<T>&&>(value);
 }
@@ -20,8 +20,6 @@ template <typename T>
 class MyAlloc
 {
 public:
-#define null_error if(!ptr) return
-
 	T * allocate(size_t count)
 	{
 		return static_cast<T*>(::operator new(count * sizeof(T)));
@@ -33,12 +31,12 @@ public:
 	template<typename... Args>
 	void construct(T* ptr, Args&&... args)
 	{
-		null_error;
+		if (!ptr) return;
 		new(reinterpret_cast<void*>(ptr)) T{ std::forward<Args>(args)... };
 	}
 	void destroy(T* ptr)
 	{
-		null_error;
+		if (!ptr) return;
 		ptr->~T();
 	}
 };
@@ -65,13 +63,14 @@ public:
 		delete this->_ptr;
 		this->_ptr = other._ptr;
 		other._ptr = nullptr;
+
 		return *this;
 	}
 	T& operator*() const
 	{
 		return *_ptr;
 	}
-	T* operator->()const
+	T* operator->() const
 	{
 		return _ptr;
 	}
@@ -102,11 +101,11 @@ private:
 	template <typename T, typename... Args>
 	friend shared_ptr<T> make_shared(T, Args&&... args);
 
-	ControlBlock<T>* cptr = nullptr; // make shared 
-	T* _ptr = nullptr; // c pointer
-	size_t* counter = nullptr; // c pointer
+	ControlBlock<T>* cptr = nullptr;  // make shared 
+	T* _ptr = nullptr;                // c pointer
+	size_t* counter = nullptr;        // c pointer
 
-	struct make_shared_t; // some struct
+	struct make_shared_t; 
 
 public:
 	shared_ptr() {}
@@ -127,19 +126,23 @@ public:
 	shared_ptr& operator=(shared_ptr& other)
 	{
 		if (*this == &other) return *this;
+
 		--(*counter);
 		_ptr = other._ptr;
 		counter = other.counter;
 		++(*counter);
+
 		return *this;
 	}
 	shared_ptr& operator=(shared_ptr&& other)
 	{
 		if (*this == &other) return *this;
+
 		_ptr = other._ptr;
 		counter = other.counter;
 		other._ptr = nullptr;
 		other.counter = nullptr;
+
 		return *this;
 	}
 
@@ -153,8 +156,10 @@ public:
 			--(*counter);
 			return;
 		}
+
 		delete counter;
 		delete _ptr;
+
 		_ptr = nullptr;
 		counter = nullptr;
 	}
@@ -164,6 +169,7 @@ template <typename T, typename... Args>
 shared_ptr<T> make_shared(T, Args&&... args)
 {
 	auto ptr = new ControlBlock<T>(T{ std::forward<Args>(args)... });
+
 	return ::shared_ptr<T>(ptr);
 }
 
