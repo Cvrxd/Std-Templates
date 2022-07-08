@@ -10,201 +10,218 @@
 #include <cassert>
 #include <utility>
 
+
 class ThreadsPool
 {
 private:
-    enum class TaskStatus
-    {
-        in_proces,
-        completed
-    };
+	using unique_lock_m = std::unique_lock <std::mutex>;
+	using lock_guard_m  = std::lock_guard  <std::mutex>;
 
-    struct TaskInfo
-    {
-        TaskStatus status = TaskStatus::in_proces;
-        std::any result;
-    };
+	enum class TaskStatus
+	{
+		in_proces,
+		completed
+	};
 
-    class Task
-    {
-    private:
-        //Funtions variables
-        std::function<void()> void_function;
-        std::function<std::any()> non_void_function;
+	struct TaskInfo
+	{
+		TaskStatus status = TaskStatus::in_proces;
+		std::any result;
+	};
 
-        //Result variable
-        std::any return_value;
+	class Task
+	{
+	private:
+		std::function<void()> void_function;
+		std::function<std::any()> non_void_function;
 
-        //Is void flag
-        bool is_void;
+		std::any return_value;
 
-    public:
-        template <typename FuncReturnType, typename ...Args, typename ...FuncTypes>
-        Task(FuncReturnType(*func)(FuncTypes...), Args&&... args)
-            : is_void{ std::is_void_v<FuncReturnType> }
-        {
-            if constexpr (std::is_void_v<FuncReturnType>)
-            {
-                void_function = std::bind(func, args...);
-                non_void_function = []()->int { return 0; };
-            }
-            else
-            {
-                void_function = []()->void {};
-                non_void_function = std::bind(func, args...);
-            }
-        }
+		bool is_void;
+	public:
 
-        void run()
-        {
-            void_function();
-            return_value = non_void_function();
-        }
+		template<typename ReturnFunctionType, typename ...FunctionArguments, typename ...FunctionTypes>
+		Task(ReturnFunctionType(*function)(FunctionTypes...), FunctionArguments && ...arguments)
+			: is_void{ std::is_void_v<FuncReturnType> }
+		{
+			if constexpr (this->is_void)
+			{
+				this->void_function = std::bind(function, arguments);
 
-        bool has_result()
-        {
-            return !is_void;
-        }
+				this->non_void_function = []() -> int {return 0; };
+			}
+			else
+			{
+				this->void_function = []() -> void { };
 
-        std::any get_result() const
-        {
-            assert(!is_void);
-            assert(return_value.has_value());
+				this->non_void_function = std::bind(function, arguments);
+			}
+		}
 
-            return return_value;
-        }
-    };
+		void run()
+		{
+			if (this->is_void)
+			{
+				this->void_function();
+			}
+			else
+			{
+				this->return_value = this->non_void_function();
+			}	
+		}
 
-    using unique_lock_m = std::unique_lock<std::mutex>;
-    using lock_guard_m = std::lock_guard<std::mutex>;
+		bool has_result()
+		{
+			return !this->is_void;
+		}
 
-    //Threads
-    std::vector<std::thread>               threads;
+		std::any get_result() const
+		{
+			assert(!this->is_void);
+			assert(this->return_value.has_value());
 
-    std::queue<std::pair<Task, uint64_t>>  taskPool;
-    std::mutex                             taskPoolMutex;
-    std::condition_variable                taskPoolCv;
+			return this->return_value;
+		}
+	};
 
-    std::unordered_map<uint64_t, TaskInfo> tasksInfoMap;
-    std::condition_variable                tasksInfoCv;
-    std::mutex                             tasksInfoMutex;
+	//Threads
+	std::vector<std::thread> threads;
 
-    std::condition_variable                waitAllCv;
+	//Tasks pool variables
+	std::queue<std::pair<Task, uint64_t>>   tasks_pool;
+	std::mutex                             tasks_pool_mutex;
+	std::condition_variable                tasks_pool_cv;
 
-    std::atomic<bool>                      quite{ false };
-    std::atomic<uint64_t>                  lastTaskIndex{ 0 };
-    std::atomic<uint64_t>                  completedTasksCounter{ 0 };
+	//Tasks info variables
+	std::unordered_map<uint64_t, TaskInfo>  tasks_info_map;
+	std::mutex                             tasks_info_mutex;
+	std::condition_variable                tasks_info_cv;
 
-    //Run task function
-    void run()
-    {
-        while (!quite)
-        {
-            unique_lock_m lock(taskPoolMutex);
+	std::condition_variable                wait_all_cv;
 
-            taskPoolCv.wait(lock, [this]()->bool { return !taskPool.empty() || quite; });
+	std::atomic<bool>                      quite                  { false };
+	std::atomic<uint64_t>                  last_task_index        { 0 };
+	std::atomic<uint64_t>                  completed_task_counter { 0 };
 
-            if (!taskPool.empty() && !quite)
-            {
-                std::pair<Task, uint64_t> task = std::move(taskPool.front());
-                taskPool.pop();
-                lock.unlock();
+	//Tasks run function
+	void run()
+	{
+		while (!this->quite)
+		{
+			unique_lock_m lock(this->tasks_pool_mutex);
 
-                task.first.run();
+			this->tasks_pool_cv.wait(lock, [this]() -> bool { return !this->tasks_pool.empty() || quite; });
 
-                lock_guard_m lock(tasksInfoMutex);
+			if (!this->tasks_pool.empty() && !this->quite)
+			{
+				std::pair<Task, uint64_t> task = std::move_if_noexcept(this->tasks_pool.front());
 
-                if (task.first.has_result())
-                {
-                    tasksInfoMap[task.second].result = task.first.get_result();
-                }
+				this->tasks_pool.pop();
 
-                tasksInfoMap[task.second].status = TaskStatus::completed;
-                ++completedTasksCounter;
-            }
+				lock.unlock();
 
-            waitAllCv.notify_all();
-            tasksInfoCv.notify_all(); // notify for wait function
-        }
-    }
+				task.first.run();
 
+				lock_guard_m lock(this->tasks_info_mutex);
+
+				if (task.first.has_result())
+				{
+					this->tasks_info_map[task.second].result = task.first.get_result();
+				}
+
+				this->tasks_info_map[task.second].status = TaskStatus::completed;
+
+				this->completed_task_counter.fetch_add(1);
+			}
+
+			this->wait_all_cv.notify_all();
+			this->tasks_info_cv.notify_all(); 
+		}
+	}
 public:
-    ThreadsPool(const uint32_t num_threads)
-    {
-        threads.reserve(num_threads);
+	ThreadsPool(const ThreadsPool& other)              = delete;
+	ThreadsPool(ThreadsPool&& other)                   = delete;
+	ThreadsPool& operator = (const ThreadsPool& other) = delete;
+	ThreadsPool& operator = (ThreadsPool&& other)      = delete;
 
-        for (int i = 0; i < num_threads; ++i)
-        {
-            threads.emplace_back(&ThreadsPool::run, this);
-        }
-    }
+	ThreadsPool(const uint64_t& number_of_threads)
+	{
+		this->threads.reserve(number_of_threads);
 
-    template <typename Func, typename ...Args, typename ...FuncTypes>
-    uint64_t add_task(Func(*func)(FuncTypes...), Args&&... args)
-    {
-        const uint64_t task_id = lastTaskIndex++;
+		for (int i = 0; i < number_of_threads; ++i)
+		{
+			this->threads.emplace_back(&ThreadsPool::run, this);
+		}
+	}
 
-        unique_lock_m lock_info_lock(tasksInfoMutex);
+	template <typename FunctionReturntType, typename ...FuntionArguments, typename ...FunctionTypes>
+	uint64_t add_task(FunctionReturntType(*function)(FunctionTypes...), FuntionArguments&&... arguments)
+	{
+		const uint64_t task_id = this->last_task_index++;
 
-        tasksInfoMap[task_id] = TaskInfo();
-        lock_info_lock.unlock();
+		unique_lock_m lock_info_lock(this->tasks_info_mutex);
 
-        lock_guard_m pool_lock(taskPoolMutex);
+		this->tasks_info_map[task_id] = TaskInfo();
+		lock_info_lock.unlock();
 
-        taskPool.emplace(Task(func, std::forward<Args>(args)...), task_id);
-        taskPoolCv.notify_one();
+		lock_guard_m pool_lock(this->tasks_pool_mutex);
 
-        return task_id;
-    }
+		this->tasks_pool.emplace(Task(function, std::forward<FuntionArguments>(arguments)...), task_id);
 
-    void wait(const uint64_t task_id)
-    {
-        unique_lock_m lock(tasksInfoMutex);
+		this->tasks_pool_cv.notify_one();
 
-        tasksInfoCv.wait(lock, [this, task_id]() -> bool
-            {
-                return task_id < lastTaskIndex&& tasksInfoMap[task_id].status == TaskStatus::completed;
-            });
-    }
+		return task_id;
+	}
 
-    std::any wait_result(const uint64_t task_id)
-    {
-        wait(task_id);
+	void wait(const uint64_t& task_id)
+	{
+		unique_lock_m lock(this->tasks_info_mutex);
 
-        return tasksInfoMap[task_id].result;
-    }
+		this->tasks_info_cv.wait(lock, [this, task_id]() -> bool
+			{
+				return task_id < last_task_index && tasks_info_map[task_id].status == TaskStatus::completed;
+			});
+	}
 
-    template<class T>
-    void wait_result(const uint64_t task_id, T& value)
-    {
-        wait(task_id);
+	std::any wait_result(const uint64_t task_id)
+	{
+		wait(task_id);
 
-        value = std::any_cast<T>(tasksInfoMap[task_id].result);
-    }
+		return this->tasks_info_map[task_id].result;
+	}
 
-    void wait_all()
-    {
-        unique_lock_m lock(tasksInfoMutex);
+	template<class T>
+	void wait_result(const uint64_t task_id, T& value)
+	{
+		wait(task_id);
 
-        waitAllCv.wait(lock, [this]() -> bool { return completedTasksCounter == lastTaskIndex; });
-    }
+		value = std::any_cast<T>(tasksInfoMap[task_id].result);
+	}
 
-    bool task_completed(const uint64_t task_id)
-    {
-        unique_lock_m lock(tasksInfoMutex);
+	void wait_all()
+	{
+		unique_lock_m lock(this->tasks_info_mutex);
 
-        return task_id < lastTaskIndex&& tasksInfoMap[task_id].status == TaskStatus::completed;
-    }
+		this->wait_all_cv.wait(lock, [this]() -> bool { return completed_task_counter == last_task_index; });
+	}
 
-    ~ThreadsPool()
-    {
-        quite = true;
+	bool task_completed(const uint64_t task_id)
+	{
+		unique_lock_m lock(this->tasks_info_mutex);
 
-        taskPoolCv.notify_all();
+		return task_id < last_task_index && tasks_info_map[task_id].status == TaskStatus::completed;
+	}
 
-        for (int i = 0; i < threads.size(); ++i)
-        {
-            threads[i].join();
-        }
-    }
+	~ThreadsPool()
+	{
+		this->quite = true;
+
+		this->wait_all_cv.notify_all();
+
+		for (int i = 0; i < threads.size(); ++i)
+		{
+			this->threads[i].join();
+		}
+	}
+
 };
