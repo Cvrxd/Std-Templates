@@ -15,13 +15,13 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Std Templates.cpp">
+    <ClInclude Include="Src\ThreadPool.h">
       <Filter>Исходные файлы</Filter>
-    </ClCompile>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ThreadPool.h">
+    <ClCompile Include="Src\Std Templates.cpp">
       <Filter>Файлы заголовков</Filter>
-    </ClInclude>
+    </ClCompile>
   </ItemGroup>
 </Project>
